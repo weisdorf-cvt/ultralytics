@@ -3,7 +3,7 @@
 import math
 import random
 from copy import deepcopy
-from typing import Tuple, Union
+from typing import Tuple, Union, Dict, Callable
 
 import cv2
 import numpy as np
@@ -486,6 +486,33 @@ class BaseMixTransform:
         return labels
 
 
+class Buckets:
+
+    def __init__(self, key: Callable):
+        self._key = key
+        self._buckets = []
+
+    def insert(self, item):
+        index = self._key(item)
+        while len(self._buckets) < index + 1:
+            self._buckets.append([])
+        self._buckets[index].append(item)
+
+    def get(self, index, condition: Callable):
+
+        while index >= len(self._buckets):
+            index -= 1
+
+        while index >= 0:
+            for j in range(len(self._buckets[index]) - 1, -1, -1):
+                item = self._buckets[index][j]
+                if condition(item):
+                    return self._buckets[index].pop(j)
+            index -= 1
+
+        return None
+
+
 class Mosaic(BaseMixTransform):
     """
     Mosaic augmentation for image datasets.
@@ -516,7 +543,7 @@ class Mosaic(BaseMixTransform):
         >>> augmented_labels = mosaic_aug(original_labels)
     """
 
-    def __init__(self, dataset, imgsz=640, p=1.0, n=4):
+    def __init__(self, dataset, imgsz=3840, p=1.0, n=40):
         """
         Initializes the Mosaic augmentation object.
 
@@ -595,6 +622,84 @@ class Mosaic(BaseMixTransform):
             self._mosaic3(labels) if self.n == 3 else self._mosaic4(labels) if self.n == 4 else self._mosaic9(labels)
         )  # This code is modified for mosaic3 method.
 
+    def _half_fit_mosaic(self, labels):
+
+        labels_list = [labels] + labels["mix_labels"]
+
+        def _insertion_key(lbl):
+            bucket_end = 64
+            offset = int(math.log2(bucket_end))
+            h, w, _ = lbl["img"].shape
+            largest_dim = max(h, w)
+            bucket_index = math.ceil(math.log2(largest_dim)) - offset
+            bucket_index = 0 if bucket_index < 0 else bucket_index
+
+        buckets = Buckets(key=_insertion_key)
+        for lbl in labels_list:
+            buckets.insert(lbl)
+
+        def _get_bucket_index(remaining_w, remaining_h) -> int:
+            bucket_end = 64
+            offset = int(math.log2(bucket_end))
+            constraint = remaining_w if remaining_w < remaining_h else remaining_h
+            assert constraint > 0, "malformed constraint"
+            return math.ceil(math.log2(constraint)) - offset
+
+        mosaic = np.full((self.imgsz, self.imgsz, labels["img"].shape[2]), 114, dtype=np.uint8)
+        mosaic_labels = []
+
+        # 'recursive' algorithm implemented via stack
+        stack = [(0, self.imgsz, 0, self.imgsz)]
+        while stack:
+            p_x1, p_x2, p_y1, p_y2 = stack.pop(-1)
+            if p_x2 == p_x1:
+                continue
+            if p_y2 == p_y1:
+                continue
+
+            remaining_w, remaining_h = p_x2 - p_x1, p_y2 - p_y1
+            bucket_index = _get_bucket_index(remaining_w, remaining_h)
+            lbl = buckets.get(bucket_index, lambda lbl: lbl["img"].shape[0] < remaining_h and lbl["img"].shape[1] < remaining_w)
+            if lbl is None:
+                continue
+            img_h, img_w, _ = lbl["img"].shape
+            option = random.randint(0, 3)
+            if option == 0:                             # top left
+                x1, x2 = p_x1, p_x1 + img_w
+                y1, y2 = p_y1, p_y1 + img_h
+                stack.append((p_x1, p_x2,   y2, p_y2))
+                stack.append((  x2, p_x2,   y1,   y2))
+            elif option == 1:                           # top right
+                x1, x2 = p_x2 - img_w, p_x2
+                y1, y2 = p_y1, p_y1 + img_h
+                stack.append((p_x1,   x1, p_y1, p_y2))
+                stack.append((  x1, p_x2,   y2, p_y2))
+            elif option == 2:                           # bottom left
+                x1, x2 = p_x1, p_x1 + img_w
+                y1, y2 = p_y2 - img_h, p_y2
+                stack.append((  x1,   x2, p_y1,   y1))
+                stack.append((  x2, p_x2, p_y1, p_y2))
+            elif option == 3:                           # bottom right
+                x1, x2 = p_x2 - img_w, p_x2
+                y1, y2 = p_y2 - img_h, p_y2
+                stack.append((p_x1, p_x2, p_y1,   y1))
+                stack.append((p_x1,   x1,   y1, p_y2))
+
+            mosaic[y1:y2, x1:x2] = lbl["img"]
+
+            # update the label bbs
+            nh, nw = lbl["img"].shape[:2]
+            lbl["instances"].convert_bbox(format="xyxy")
+            lbl["instances"].denormalize(nw, nh)
+            lbl["instances"].add_padding(x1, x2)
+
+            # concat the labels
+            mosaic_labels.append(lbl)
+
+        final_labels = self._cat_labels(mosaic_labels)
+        final_labels["img"] = mosaic
+        return final_labels
+
     def _mosaic3(self, labels):
         """
         Creates a 1x3 image mosaic by combining three images.
@@ -649,8 +754,8 @@ class Mosaic(BaseMixTransform):
             # Labels assuming imgsz*2 mosaic size
             labels_patch = self._update_labels(labels_patch, padw + self.border[0], padh + self.border[1])
             mosaic_labels.append(labels_patch)
-        final_labels = self._cat_labels(mosaic_labels)
 
+        final_labels = self._cat_labels(mosaic_labels)
         final_labels["img"] = img3[-self.border[0] : self.border[0], -self.border[1] : self.border[1]]
         return final_labels
 
