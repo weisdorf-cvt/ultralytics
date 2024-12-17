@@ -494,7 +494,9 @@ class Buckets:
 
     def insert(self, item):
         index = self._key(item)
-        while len(self._buckets) < index + 1:
+        assert isinstance(index, int), "Key function must return an index"
+
+        while len(self._buckets) < (index + 1):
             self._buckets.append([])
         self._buckets[index].append(item)
 
@@ -562,7 +564,7 @@ class Mosaic(BaseMixTransform):
             >>> mosaic_aug = Mosaic(dataset, imgsz=640, p=0.5, n=4)
         """
         assert 0 <= p <= 1.0, f"The probability should be in range [0, 1], but got {p}."
-        assert n in {4, 9}, "grid must be equal to 4 or 9."
+        # assert n in {4, 9}, "grid must be equal to 4 or 9."
         super().__init__(dataset=dataset, p=p)
         self.imgsz = imgsz
         self.border = (-imgsz // 2, -imgsz // 2)  # width, height
@@ -618,13 +620,15 @@ class Mosaic(BaseMixTransform):
         """
         assert labels.get("rect_shape", None) is None, "rect and mosaic are mutually exclusive."
         assert len(labels.get("mix_labels", [])), "There are no other images for mosaic augment."
+
+        if self.n == 40:
+            return self._half_fit_mosaic(labels)
+
         return (
             self._mosaic3(labels) if self.n == 3 else self._mosaic4(labels) if self.n == 4 else self._mosaic9(labels)
         )  # This code is modified for mosaic3 method.
 
     def _half_fit_mosaic(self, labels):
-
-        labels_list = [labels] + labels["mix_labels"]
 
         def _insertion_key(lbl):
             bucket_end = 64
@@ -633,9 +637,10 @@ class Mosaic(BaseMixTransform):
             largest_dim = max(h, w)
             bucket_index = math.ceil(math.log2(largest_dim)) - offset
             bucket_index = 0 if bucket_index < 0 else bucket_index
+            return bucket_index
 
         buckets = Buckets(key=_insertion_key)
-        for lbl in labels_list:
+        for lbl in labels["mix_labels"]:
             buckets.insert(lbl)
 
         def _get_bucket_index(remaining_w, remaining_h) -> int:
@@ -645,13 +650,22 @@ class Mosaic(BaseMixTransform):
             assert constraint > 0, "malformed constraint"
             return math.ceil(math.log2(constraint)) - offset
 
-        mosaic = np.full((self.imgsz, self.imgsz, labels["img"].shape[2]), 114, dtype=np.uint8)
+        if isinstance(self.imgsz, int):
+            target_h = self.imgsz
+            target_w = self.imgsz
+        else:
+            print("imgsz is a tuple")
+            target_h, target_w = self.imgsz
+
+        mosaic = np.full((target_h, target_w, labels["img"].shape[2]), 114, dtype=np.uint8)
         mosaic_labels = []
 
         # 'recursive' algorithm implemented via stack
-        stack = [(0, self.imgsz, 0, self.imgsz)]
+        stack = [(0, target_w, 0, target_h)]
+        isFirstIteration = True
         while stack:
             p_x1, p_x2, p_y1, p_y2 = stack.pop(-1)
+
             if p_x2 == p_x1:
                 continue
             if p_y2 == p_y1:
@@ -659,9 +673,16 @@ class Mosaic(BaseMixTransform):
 
             remaining_w, remaining_h = p_x2 - p_x1, p_y2 - p_y1
             bucket_index = _get_bucket_index(remaining_w, remaining_h)
-            lbl = buckets.get(bucket_index, lambda lbl: lbl["img"].shape[0] < remaining_h and lbl["img"].shape[1] < remaining_w)
+
+            if isFirstIteration:
+                lbl = labels
+                isFirstIteration = False
+            else:
+                lbl = buckets.get(bucket_index, lambda lbl: lbl["img"].shape[0] <= remaining_h and lbl["img"].shape[1] <= remaining_w)
+
             if lbl is None:
                 continue
+
             img_h, img_w, _ = lbl["img"].shape
             option = random.randint(0, 3)
             if option == 0:                             # top left
@@ -686,14 +707,7 @@ class Mosaic(BaseMixTransform):
                 stack.append((p_x1,   x1,   y1, p_y2))
 
             mosaic[y1:y2, x1:x2] = lbl["img"]
-
-            # update the label bbs
-            nh, nw = lbl["img"].shape[:2]
-            lbl["instances"].convert_bbox(format="xyxy")
-            lbl["instances"].denormalize(nw, nh)
-            lbl["instances"].add_padding(x1, x2)
-
-            # concat the labels
+            lbl = self._update_labels(lbl, x1, y1)
             mosaic_labels.append(lbl)
 
         final_labels = self._cat_labels(mosaic_labels)
