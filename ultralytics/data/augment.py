@@ -500,6 +500,9 @@ class Buckets:
             self._buckets.append([])
         self._buckets[index].append(item)
 
+    def size(self):
+        return sum(len(b) for b in self._buckets)
+
     def get(self, index, condition: Callable):
 
         while index >= len(self._buckets):
@@ -545,7 +548,7 @@ class Mosaic(BaseMixTransform):
         >>> augmented_labels = mosaic_aug(original_labels)
     """
 
-    def __init__(self, dataset, imgsz=3840, p=1.0, n=40):
+    def __init__(self, dataset, imgsz=3840, p=1.0, n=80):
         """
         Initializes the Mosaic augmentation object.
 
@@ -590,10 +593,16 @@ class Mosaic(BaseMixTransform):
             >>> indexes = mosaic.get_indexes()
             >>> print(len(indexes))  # Output: 3
         """
-        if buffer:  # select images from buffer
+        if False and buffer:  # select images from buffer
             return random.choices(list(self.dataset.buffer), k=self.n - 1)
         else:  # select any images
-            return [random.randint(0, len(self.dataset) - 1) for _ in range(self.n - 1)]
+            N = len(self.dataset)
+            k = self.n - 1
+            if k > N:
+                # sample with replacement
+                return [random.randint(0, N - 1) for _ in range(k)]
+            # sample without replacement
+            return random.sample(range(N), k=k)
 
     def _mix_transform(self, labels):
         """
@@ -621,8 +630,7 @@ class Mosaic(BaseMixTransform):
         assert labels.get("rect_shape", None) is None, "rect and mosaic are mutually exclusive."
         assert len(labels.get("mix_labels", [])), "There are no other images for mosaic augment."
 
-        if self.n == 40:
-            return self._half_fit_mosaic(labels)
+        return self._half_fit_mosaic(labels)
 
         return (
             self._mosaic3(labels) if self.n == 3 else self._mosaic4(labels) if self.n == 4 else self._mosaic9(labels)
@@ -630,31 +638,26 @@ class Mosaic(BaseMixTransform):
 
     def _half_fit_mosaic(self, labels):
 
-        def _insertion_key(lbl):
+        def _get_bucket_index(dim: int) -> int:
             bucket_end = 64
             offset = int(math.log2(bucket_end))
+            assert dim > 0, "malformed constraint"
+            index = math.ceil(math.log2(dim)) - offset
+            return max(index, 0)
+
+        def _insertion_key(lbl):
             h, w, _ = lbl["img"].shape
             largest_dim = max(h, w)
-            bucket_index = math.ceil(math.log2(largest_dim)) - offset
-            bucket_index = 0 if bucket_index < 0 else bucket_index
-            return bucket_index
+            return _get_bucket_index(largest_dim)
 
         buckets = Buckets(key=_insertion_key)
         for lbl in labels["mix_labels"]:
             buckets.insert(lbl)
 
-        def _get_bucket_index(remaining_w, remaining_h) -> int:
-            bucket_end = 64
-            offset = int(math.log2(bucket_end))
-            constraint = remaining_w if remaining_w < remaining_h else remaining_h
-            assert constraint > 0, "malformed constraint"
-            return math.ceil(math.log2(constraint)) - offset
-
         if isinstance(self.imgsz, int):
             target_h = self.imgsz
             target_w = self.imgsz
         else:
-            print("imgsz is a tuple")
             target_h, target_w = self.imgsz
 
         mosaic = np.full((target_h, target_w, labels["img"].shape[2]), 114, dtype=np.uint8)
@@ -662,6 +665,11 @@ class Mosaic(BaseMixTransform):
 
         # 'recursive' algorithm implemented via stack
         stack = [(0, target_w, 0, target_h)]
+
+        total_filled_area = 0
+        total_unfillable_area = 0
+        total_target_area = target_w * target_h
+
         isFirstIteration = True
         while stack:
             p_x1, p_x2, p_y1, p_y2 = stack.pop(-1)
@@ -672,8 +680,9 @@ class Mosaic(BaseMixTransform):
                 continue
 
             remaining_w, remaining_h = p_x2 - p_x1, p_y2 - p_y1
-            bucket_index = _get_bucket_index(remaining_w, remaining_h)
+            bucket_index = _get_bucket_index(max(remaining_w, remaining_h))
 
+            lbl = None
             if isFirstIteration:
                 lbl = labels
                 isFirstIteration = False
@@ -681,9 +690,12 @@ class Mosaic(BaseMixTransform):
                 lbl = buckets.get(bucket_index, lambda lbl: lbl["img"].shape[0] <= remaining_h and lbl["img"].shape[1] <= remaining_w)
 
             if lbl is None:
+                total_unfillable_area += remaining_h * remaining_w
                 continue
 
             img_h, img_w, _ = lbl["img"].shape
+            total_filled_area += img_h * img_w
+
             option = random.randint(0, 3)
             if option == 0:                             # top left
                 x1, x2 = p_x1, p_x1 + img_w
@@ -710,8 +722,15 @@ class Mosaic(BaseMixTransform):
             lbl = self._update_labels(lbl, x1, y1)
             mosaic_labels.append(lbl)
 
+        # assert total_filled_area + total_unfillable_area == total_target_area
+        packing_ratio = total_filled_area / total_target_area
+        # packing ratio will be affected by how many images we pull in
+        # higher packing ratio is better, 1.0 is perfect
+        # typical packing ratio is 0.7 - 0.9
+
         final_labels = self._cat_labels(mosaic_labels)
         final_labels["img"] = mosaic
+
         return final_labels
 
     def _mosaic3(self, labels):
