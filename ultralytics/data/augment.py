@@ -572,6 +572,8 @@ class Mosaic(BaseMixTransform):
         self.imgsz = imgsz
         self.border = (-imgsz // 2, -imgsz // 2)  # width, height
         self.n = n
+        if n >= 40:
+            self.border = (0, 0)
 
     def get_indexes(self, buffer=True):
         """
@@ -728,7 +730,7 @@ class Mosaic(BaseMixTransform):
         # higher packing ratio is better, 1.0 is perfect
         # typical packing ratio is 0.7 - 0.9
 
-        final_labels = self._cat_labels(mosaic_labels)
+        final_labels = self._cat_labels(mosaic_labels, resized_imgsz=(target_h, target_w))
         final_labels["img"] = mosaic
 
         return final_labels
@@ -949,7 +951,7 @@ class Mosaic(BaseMixTransform):
         labels["instances"].add_padding(padw, padh)
         return labels
 
-    def _cat_labels(self, mosaic_labels):
+    def _cat_labels(self, mosaic_labels, resized_imgsz=None):
         """
         Concatenates and processes labels for mosaic augmentation.
 
@@ -980,20 +982,35 @@ class Mosaic(BaseMixTransform):
             return {}
         cls = []
         instances = []
-        imgsz = self.imgsz * 2  # mosaic imgsz
         for labels in mosaic_labels:
             cls.append(labels["cls"])
             instances.append(labels["instances"])
+
+        if resized_imgsz is None:
+            if isinstance(self.imgsz, int):
+                resized_img_h = self.imgsz
+                resized_img_w = self.imgsz
+            else:
+                resized_img_h, resized_img_w = self.imgsz
+            resized_img_h *= 2
+            resized_img_w *= 2
+        else:
+            if isinstance(resized_imgsz, int):
+                resized_img_h = resized_imgsz
+                resized_img_w = resized_imgsz
+            else:
+                resized_img_h, resized_img_w = resized_imgsz
+
         # Final labels
         final_labels = {
             "im_file": mosaic_labels[0]["im_file"],
             "ori_shape": mosaic_labels[0]["ori_shape"],
-            "resized_shape": (imgsz, imgsz),
+            "resized_shape": (resized_img_h, resized_img_w),
             "cls": np.concatenate(cls, 0),
             "instances": Instances.concatenate(instances, axis=0),
             "mosaic_border": self.border,
         }
-        final_labels["instances"].clip(imgsz, imgsz)
+        final_labels["instances"].clip(resized_img_w, resized_img_h)
         good = final_labels["instances"].remove_zero_area_boxes()
         final_labels["cls"] = final_labels["cls"][good]
         if "texts" in mosaic_labels[0]:
