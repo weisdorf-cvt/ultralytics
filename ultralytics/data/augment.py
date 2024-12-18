@@ -593,9 +593,9 @@ class Mosaic(BaseMixTransform):
             >>> indexes = mosaic.get_indexes()
             >>> print(len(indexes))  # Output: 3
         """
-        if False and buffer:  # select images from buffer
+        if buffer and len(self.dataset.buffer) >= self.n:
             return random.choices(list(self.dataset.buffer), k=self.n - 1)
-        else:  # select any images
+        else:
             N = len(self.dataset)
             k = self.n - 1
             if k > N:
