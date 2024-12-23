@@ -512,10 +512,28 @@ class Buckets:
             for j in range(len(self._buckets[index]) - 1, -1, -1):
                 item = self._buckets[index][j]
                 if condition(item):
-                    return self._buckets[index].pop(j)
+                    result = self._buckets[index].pop(j)
+                    return result
             index -= 1
 
         return None
+
+
+def _mosaic_resize_label(lbl: Dict, scale: float) -> Dict:
+    lbl = deepcopy(lbl)
+    img_h, img_w = lbl["img"].shape[:2]
+    lbl["instances"].normalize(img_w, img_h)
+    new_img_h = int(scale * img_h)
+    new_img_w = int(scale * img_w)
+    resized_img = cv2.resize(lbl["img"], (new_img_w, new_img_h), interpolation=cv2.INTER_LINEAR)
+    lbl["img"] = resized_img
+    lbl["resized_shape"] = resized_img.shape[:2]
+    assert "ori_shape" in lbl, "No original shape set, I should set it myself"
+    lbl["ratio_pad"] = (
+        lbl["resized_shape"][0] / lbl["ori_shape"][0],
+        lbl["resized_shape"][1] / lbl["ori_shape"][1],
+    )
+    return lbl, (new_img_h, new_img_w)
 
 
 class Mosaic(BaseMixTransform):
@@ -640,6 +658,11 @@ class Mosaic(BaseMixTransform):
 
     def _half_fit_mosaic(self, labels):
 
+        def _debug(*args):
+            if False:
+                print(*args)
+
+        _debug(" ====== ENTERING HALFFIT ====== ")
         def _get_bucket_index(dim: int) -> int:
             bucket_end = 64
             offset = int(math.log2(bucket_end))
@@ -682,20 +705,50 @@ class Mosaic(BaseMixTransform):
                 continue
 
             remaining_w, remaining_h = p_x2 - p_x1, p_y2 - p_y1
-            bucket_index = _get_bucket_index(max(remaining_w, remaining_h))
 
             lbl = None
             if isFirstIteration:
                 lbl = labels
+                shrink_probability = 0
                 isFirstIteration = False
             else:
+                bucket_index = _get_bucket_index(max(remaining_w, remaining_h))
                 lbl = buckets.get(bucket_index, lambda lbl: lbl["img"].shape[0] <= remaining_h and lbl["img"].shape[1] <= remaining_w)
+                shrink_probability = 0.2 / self.p
 
             if lbl is None:
                 total_unfillable_area += remaining_h * remaining_w
                 continue
 
             img_h, img_w, _ = lbl["img"].shape
+
+            # with some probability we are going to scale the image down so that
+            # the smallest person bounding box has a very small area
+            instances: Instances = labels["instances"]
+            class_ids = labels["cls"]
+
+            smallest_person_area = None
+            for i in range(len(instances)):
+                class_id = int(class_ids[i])
+                if class_id != 0:
+                    continue
+                area = instances.bbox_areas[0]
+                if smallest_person_area is None or area < smallest_person_area:
+                    smallest_person_area = area
+
+            if smallest_person_area is not None and random.random() < shrink_probability:
+                _debug("Passed roll for applying shrink, computing proposed scale")
+                target_area = random.uniform(200, 400)
+                scale = math.sqrt(target_area / smallest_person_area)
+                if scale < 1:
+                    _debug("Shrink scale is less than one, applying shrink and grayscale")
+                    lbl, (img_h, img_w) = _mosaic_resize_label(lbl, scale)
+
+            # with some probability, make the image grayscale
+            if random.random() < 0.05:
+                gray_image = cv2.cvtColor(lbl["img"], cv2.COLOR_BGR2GRAY)
+                lbl["img"] = cv2.merge([gray_image, gray_image, gray_image])
+
             total_filled_area += img_h * img_w
 
             option = random.randint(0, 3)
@@ -724,8 +777,8 @@ class Mosaic(BaseMixTransform):
             lbl = self._update_labels(lbl, x1, y1)
             mosaic_labels.append(lbl)
 
-        # assert total_filled_area + total_unfillable_area == total_target_area
-        packing_ratio = total_filled_area / total_target_area
+        assert total_filled_area + total_unfillable_area == total_target_area
+        # packing_ratio = total_filled_area / total_target_area
         # packing ratio will be affected by how many images we pull in
         # higher packing ratio is better, 1.0 is perfect
         # typical packing ratio is 0.7 - 0.9
@@ -733,6 +786,7 @@ class Mosaic(BaseMixTransform):
         final_labels = self._cat_labels(mosaic_labels, resized_imgsz=(target_h, target_w))
         final_labels["img"] = mosaic
 
+        _debug(" ====== EXITING HALFFIT ====== ")
         return final_labels
 
     def _mosaic3(self, labels):
