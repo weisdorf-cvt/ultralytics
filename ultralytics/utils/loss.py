@@ -164,15 +164,12 @@ class v8DetectionLoss:
 
         m = model.model[-1]  # Detect() module
 
-        self._use_focal_loss = True
-        if self._use_focal_loss:
-            # print("Initializing Focal Loss")
-            self.bce = None
-            self.class_focal_loss = FocalLoss()
-        else:
-            # print("Initializing BCE Loss")
-            self.bce = nn.BCEWithLogitsLoss(reduction="none")
-            self.class_focal_loss = None
+        # LLD CODE starts
+        # Instead of BCE we'll implement Focal Loss
+        # self.bce = nn.BCEWithLogitsLoss(reduction="none")
+        self.gamma = 2.0  # Focusing parameter
+        self.alpha = 0.25  # Class balance parameter
+        # LLD CODE ends
 
         self.hyp = h
         self.stride = m.stride  # model strides
@@ -186,6 +183,40 @@ class v8DetectionLoss:
         self.assigner = TaskAlignedAssigner(topk=tal_topk, num_classes=self.nc, alpha=0.5, beta=6.0)
         self.bbox_loss = BboxLoss(m.reg_max).to(device)
         self.proj = torch.arange(m.reg_max, dtype=torch.float, device=device)
+
+    def focal_loss(self, pred_scores, target_scores):
+        """
+        Compute Focal Loss in a numerically stable way.
+
+        Args:
+            pred_scores: Raw predictions (logits)
+            target_scores: Target values (0 or 1)
+
+        Returns:
+            Focal loss value
+        """
+        # First, clamp the predictions to prevent extreme values
+        pred_scores = torch.clamp(pred_scores, min=-50, max=50)
+
+        # Convert predictions to probabilities using sigmoid, but in a stable way
+        # Instead of direct sigmoid, we'll use log-space calculations
+        log_p = F.logsigmoid(pred_scores)  # log(p)
+        log_1_p = F.logsigmoid(-pred_scores)  # log(1-p)
+
+        # Compute probabilities (only used for the modulating factor)
+        # We use exp(log_p) which is more stable than direct sigmoid
+        p = torch.exp(log_p)
+
+        # Compute the modulating factor: (1-p)^gamma for positive examples
+        # and p^gamma for negative examples
+        modulator = torch.pow(1 - p, self.gamma) * target_scores + torch.pow(p, self.gamma) * (1 - target_scores)
+
+        # Compute the focal loss
+        # For positive examples: -alpha * (1-p)^gamma * log(p)
+        # For negative examples: -(1-alpha) * p^gamma * log(1-p)
+        loss = -(self.alpha * target_scores * log_p * modulator + (1 - self.alpha) * (1 - target_scores) * log_1_p * modulator)
+
+        return loss
 
     def preprocess(self, targets, batch_size, scale_tensor):
         """Preprocesses the target counts and matches with the input batch size to output a tensor."""
@@ -253,19 +284,9 @@ class v8DetectionLoss:
 
         target_scores_sum = max(target_scores.sum(), 1)
 
-        # Cls loss
-        # loss[1] = self.varifocal_loss(pred_scores, target_scores, target_labels) / target_scores_sum  # VFL way
-        if self._use_focal_loss:
-            # print("Calling Focal Loss")
-            loss[1] = self.class_focal_loss(
-                pred=pred_scores,
-                label=target_scores.to(dtype),
-                gamma=0.5,
-                alpha=0.5,
-            ) / target_scores_sum
-        else:
-            # print("Calling BCE Loss")
-            loss[1] = self.bce(pred_scores, target_scores.to(dtype)).sum() / target_scores_sum  # BCE
+        # loss[1] = self.bce(pred_scores, target_scores.to(dtype)).sum() / target_scores_sum  # BCE
+        loss[1] = self.focal_loss(pred_scores, target_scores.to(dtype)).sum() / target_scores_sum
+        loss[1] *= 5  # focal loss needs a small magnifier
 
         # Bbox loss
         if fg_mask.sum():
