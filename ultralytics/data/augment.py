@@ -566,7 +566,7 @@ class Mosaic(BaseMixTransform):
         >>> augmented_labels = mosaic_aug(original_labels)
     """
 
-    def __init__(self, dataset, imgsz=3840, p=1.0, n=80):
+    def __init__(self, dataset, imgsz=3840, p=1.0, n=4):
         """
         Initializes the Mosaic augmentation object.
 
@@ -589,9 +589,16 @@ class Mosaic(BaseMixTransform):
         super().__init__(dataset=dataset, p=p)
         self.imgsz = imgsz
         self.border = (-imgsz // 2, -imgsz // 2)  # width, height
-        self.n = n
-        if n >= 40:
+
+        if self.imgsz > 1000:
+            print("Overriding MosaicTransform to use half_fit mosaic for large images")
+            print("Overriding MosaicTransform.n = 80")
+            print("Overriding MosaicTransform.border = (0, 0)")
+            self.n = 80
             self.border = (0, 0)
+        else:
+            print("Setting MosaicTransform.n = 4")
+            self.n = n
 
     def get_indexes(self, buffer=True):
         """
@@ -650,11 +657,14 @@ class Mosaic(BaseMixTransform):
         assert labels.get("rect_shape", None) is None, "rect and mosaic are mutually exclusive."
         assert len(labels.get("mix_labels", [])), "There are no other images for mosaic augment."
 
-        return self._half_fit_mosaic(labels)
+        if self.n == 3:
+            return self._mosaic3(labels)
+        if self.n == 4:
+            return self._mosaic4(labels)
+        if self.n == 9:
+            return self._mosaic9(labels)
 
-        return (
-            self._mosaic3(labels) if self.n == 3 else self._mosaic4(labels) if self.n == 4 else self._mosaic9(labels)
-        )  # This code is modified for mosaic3 method.
+        return self._half_fit_mosaic(labels)
 
     def _half_fit_mosaic(self, labels):
 
@@ -663,6 +673,7 @@ class Mosaic(BaseMixTransform):
                 print(*args)
 
         _debug(" ====== ENTERING HALFFIT ====== ")
+
         def _get_bucket_index(dim: int) -> int:
             bucket_end = 64
             offset = int(math.log2(bucket_end))
