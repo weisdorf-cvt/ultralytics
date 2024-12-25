@@ -734,7 +734,7 @@ class Mosaic(BaseMixTransform):
             else:
                 bucket_index = _get_bucket_index(max(remaining_w, remaining_h))
                 lbl = buckets.get(bucket_index, lambda lbl: lbl["img"].shape[0] <= remaining_h and lbl["img"].shape[1] <= remaining_w)
-                shrink_probability = 0.2 / self.p
+                shrink_probability = 0.8 / self.p
 
             if lbl is None:
                 total_unfillable_area += remaining_h * remaining_w
@@ -760,11 +760,13 @@ class Mosaic(BaseMixTransform):
                 if smallest_person_area is None or area < smallest_person_area:
                     smallest_person_area = area
 
-            if not instance_contains_non_person_boxes and smallest_person_area is not None and random.random() < shrink_probability:
+            # if not instance_contains_non_person_boxes and smallest_person_area is not None and random.random() < shrink_probability:
+            if smallest_person_area is not None and random.random() < shrink_probability:
                 _debug("Passed roll for applying shrink, computing proposed scale")
-                target_area = random.uniform(150, 350)
+
+                target_area = random.uniform(math.sqrt(100), math.sqrt(400)) ** 2
                 scale = math.sqrt(target_area / smallest_person_area)
-                scale = max(scale, 100 / img_w, 100 / img_h)
+                scale = max(scale, 50 / img_w, 50 / img_h)
                 if scale < 1:
                     _debug("Shrink scale is less than one, applying shrink and grayscale")
                     lbl, (img_h, img_w) = _mosaic_resize_label(lbl, scale)

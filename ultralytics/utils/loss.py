@@ -252,17 +252,17 @@ class v8DetectionLoss:
             return loss.sum() * 5
 
         classwise_loss = loss.sum(1)
-        if True:
+        if False:
             # try an approach where we only care about other losses when person loss is very low
             factor = torch.pow(classwise_loss, 2)
             classwise_loss[:, 1:] *= factor
         else:
             # try an approach where we hardcode scale factors for other classes
-            class_weights = torch.tensor([1.5, 0, 1, 0, 0, 0], device=self.device).view(1, 1, 6)
+            epsilon = 1e-8
+            class_weights = torch.tensor([1.5, epsilon, 1, 0, 0, epsilon], device=self.device).view(1, 1, 6)
             classwise_loss = classwise_loss * class_weights
 
         return classwise_loss.sum() * 5
-
 
     def preprocess(self, targets, batch_size, scale_tensor):
         """Preprocesses the target counts and matches with the input batch size to output a tensor."""
