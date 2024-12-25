@@ -760,7 +760,7 @@ class Mosaic(BaseMixTransform):
 
             if smallest_person_area is not None and random.random() < shrink_probability:
                 _debug("Passed roll for applying shrink, computing proposed scale")
-                target_area = random.uniform(200, 400)
+                target_area = random.uniform(150, 350)
                 scale = math.sqrt(target_area / smallest_person_area)
                 scale = max(scale, 100 / img_w, 100 / img_h)
                 if scale < 1:
