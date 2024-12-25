@@ -164,10 +164,11 @@ class v8DetectionLoss:
 
         m = model.model[-1]  # Detect() module
 
+        self.stage = "balanced_subset"
         # LLD CODE starts
         # Instead of BCE we'll implement Focal Loss
         # self.bce = nn.BCEWithLogitsLoss(reduction="none")
-        self.gamma = 3  # Focusing parameter
+        self.gamma = 2
         gamma_to_recommended_alpha = {
             0: 0.75,
             0.1: 0.75,
@@ -246,13 +247,22 @@ class v8DetectionLoss:
              - bird (want to ignore completely),
              - fourlegged (want to ignore mostly)
         """
-        class_weights = torch.tensor([1.5, 0, 1, 0, 0, 0], device=self.device).view(1, 1, 6)
-        weighted_loss = loss * class_weights
 
-        # print(loss.shape)  # torch.Size([1, 302400, 6])
+        if self.stage == "balanced_subset":
+            return loss.sum() * 5
 
-        # focal loss needs a small magnifier so that the class loss is on a similar scale as box / dfl loss
-        return weighted_loss * 5
+        classwise_loss = loss.sum(1)
+        if True:
+            # try an approach where we only care about other losses when person loss is very low
+            factor = torch.pow(classwise_loss, 2)
+            classwise_loss[:, 1:] *= factor
+        else:
+            # try an approach where we hardcode scale factors for other classes
+            class_weights = torch.tensor([1.5, 0, 1, 0, 0, 0], device=self.device).view(1, 1, 6)
+            classwise_loss = classwise_loss * class_weights
+
+        return classwise_loss.sum() * 5
+
 
     def preprocess(self, targets, batch_size, scale_tensor):
         """Preprocesses the target counts and matches with the input batch size to output a tensor."""
@@ -323,7 +333,7 @@ class v8DetectionLoss:
         if not self.use_focal_loss:
             loss[1] = self.bce(pred_scores, target_scores.to(dtype)).sum() / target_scores_sum  # BCE
         else:
-            loss[1] = self.focal_loss(pred_scores, target_scores.to(dtype)).sum() / target_scores_sum
+            loss[1] = self.focal_loss(pred_scores, target_scores.to(dtype)) / target_scores_sum
 
         # Bbox loss
         if fg_mask.sum():
