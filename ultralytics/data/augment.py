@@ -773,10 +773,10 @@ class Mosaic(BaseMixTransform):
                     assert lbl["img"].shape[0] <= remaining_h
                     assert lbl["img"].shape[1] <= remaining_w
 
-            # with some probability, make the image grayscale
-            if random.random() < 0.05:
-                gray_image = cv2.cvtColor(lbl["img"], cv2.COLOR_BGR2GRAY)
-                lbl["img"] = cv2.merge([gray_image, gray_image, gray_image])
+            # # with some probability, make the image grayscale
+            # if random.random() < 0.05:
+            #     gray_image = cv2.cvtColor(lbl["img"], cv2.COLOR_BGR2GRAY)
+            #     lbl["img"] = cv2.merge([gray_image, gray_image, gray_image])
 
             total_filled_area += img_h * img_w
 
