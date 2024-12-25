@@ -167,7 +167,7 @@ class v8DetectionLoss:
         # LLD CODE starts
         # Instead of BCE we'll implement Focal Loss
         # self.bce = nn.BCEWithLogitsLoss(reduction="none")
-        self.gamma = 2  # Focusing parameter
+        self.gamma = 3  # Focusing parameter
         gamma_to_recommended_alpha = {
             0: 0.75,
             0.1: 0.75,
@@ -175,6 +175,7 @@ class v8DetectionLoss:
             0.5: 0.50,
             1.0: 0.25,
             2.0: 0.25,
+            3.0: 0.25,
             5.0: 0.25,
         }
         self.alpha = gamma_to_recommended_alpha.get(self.gamma, 0.25)
@@ -245,7 +246,7 @@ class v8DetectionLoss:
              - bird (want to ignore completely),
              - fourlegged (want to ignore mostly)
         """
-        class_weights = torch.tensor([2, 0.1, 1, 1e-5, 1e-5, 0.1], device=self.device).view(1, 1, 6)
+        class_weights = torch.tensor([1.5, 0, 1, 0, 0, 0], device=self.device).view(1, 1, 6)
         weighted_loss = loss * class_weights
 
         # print(loss.shape)  # torch.Size([1, 302400, 6])
