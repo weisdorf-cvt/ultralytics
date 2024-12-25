@@ -748,17 +748,19 @@ class Mosaic(BaseMixTransform):
             # the smallest person bounding box has a very small area
             instances: Instances = labels["instances"]
             class_ids = labels["cls"]
+            instance_contains_non_person_boxes = False
 
             smallest_person_area = None
             for i in range(len(instances)):
                 class_id = int(class_ids[i])
                 if class_id != 0:
+                    instance_contains_non_person_boxes = True
                     continue
                 area = instances.bbox_areas[0]
                 if smallest_person_area is None or area < smallest_person_area:
                     smallest_person_area = area
 
-            if smallest_person_area is not None and random.random() < shrink_probability:
+            if not instance_contains_non_person_boxes and smallest_person_area is not None and random.random() < shrink_probability:
                 _debug("Passed roll for applying shrink, computing proposed scale")
                 target_area = random.uniform(150, 350)
                 scale = math.sqrt(target_area / smallest_person_area)
