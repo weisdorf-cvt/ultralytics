@@ -520,11 +520,12 @@ class Buckets:
 
 
 def _mosaic_resize_label(lbl: Dict, scale: float) -> Dict:
+
     lbl = deepcopy(lbl)
     img_h, img_w = lbl["img"].shape[:2]
-    lbl["instances"].normalize(img_w, img_h)
     new_img_h = int(scale * img_h)
     new_img_w = int(scale * img_w)
+    lbl["instances"].normalize(img_w, img_h)
     resized_img = cv2.resize(lbl["img"], (new_img_w, new_img_h), interpolation=cv2.INTER_LINEAR)
     lbl["img"] = resized_img
     lbl["resized_shape"] = resized_img.shape[:2]
@@ -722,6 +723,14 @@ class Mosaic(BaseMixTransform):
                 lbl = labels
                 shrink_probability = 0
                 isFirstIteration = False
+                # potentially scale down the image if it is already too large
+                scale = min(
+                    target_h / lbl["img"].shape[0],
+                    target_w / lbl["img"].shape[1],
+                )
+                if scale < 1:
+                    _debug("Scale down image that started larger than mosaic size")
+                    lbl, (img_h, img_w) = _mosaic_resize_label(lbl, scale)
             else:
                 bucket_index = _get_bucket_index(max(remaining_w, remaining_h))
                 lbl = buckets.get(bucket_index, lambda lbl: lbl["img"].shape[0] <= remaining_h and lbl["img"].shape[1] <= remaining_w)
@@ -732,6 +741,8 @@ class Mosaic(BaseMixTransform):
                 continue
 
             img_h, img_w, _ = lbl["img"].shape
+            assert img_w <= remaining_w, f"{img_w} > {remaining_w}"
+            assert img_h <= remaining_h, f"{img_h} > {remaining_h}"
 
             # with some probability we are going to scale the image down so that
             # the smallest person bounding box has a very small area
@@ -751,9 +762,14 @@ class Mosaic(BaseMixTransform):
                 _debug("Passed roll for applying shrink, computing proposed scale")
                 target_area = random.uniform(200, 400)
                 scale = math.sqrt(target_area / smallest_person_area)
+                scale = max(scale, 100 / img_w, 100 / img_h)
                 if scale < 1:
                     _debug("Shrink scale is less than one, applying shrink and grayscale")
                     lbl, (img_h, img_w) = _mosaic_resize_label(lbl, scale)
+                    assert lbl["img"].shape[0] == img_h
+                    assert lbl["img"].shape[1] == img_w
+                    assert lbl["img"].shape[0] <= remaining_h
+                    assert lbl["img"].shape[1] <= remaining_w
 
             # with some probability, make the image grayscale
             if random.random() < 0.05:
@@ -766,6 +782,10 @@ class Mosaic(BaseMixTransform):
             if option == 0:                             # top left
                 x1, x2 = p_x1, p_x1 + img_w
                 y1, y2 = p_y1, p_y1 + img_h
+                assert x2 - x1 == img_w
+                assert y2 - y1 == img_h
+                assert y2 <= mosaic.shape[0]
+                assert x2 <= mosaic.shape[1]
                 stack.append((p_x1, p_x2,   y2, p_y2))
                 stack.append((  x2, p_x2,   y1,   y2))
             elif option == 1:                           # top right
@@ -773,18 +793,41 @@ class Mosaic(BaseMixTransform):
                 y1, y2 = p_y1, p_y1 + img_h
                 stack.append((p_x1,   x1, p_y1, p_y2))
                 stack.append((  x1, p_x2,   y2, p_y2))
+                assert x2 - x1 == img_w
+                assert y2 - y1 == img_h
+                assert y2 <= mosaic.shape[0]
+                assert x2 <= mosaic.shape[1]
             elif option == 2:                           # bottom left
                 x1, x2 = p_x1, p_x1 + img_w
                 y1, y2 = p_y2 - img_h, p_y2
                 stack.append((  x1,   x2, p_y1,   y1))
                 stack.append((  x2, p_x2, p_y1, p_y2))
+                assert x2 - x1 == img_w
+                assert y2 - y1 == img_h
+                assert y2 <= mosaic.shape[0]
+                assert x2 <= mosaic.shape[1]
             elif option == 3:                           # bottom right
                 x1, x2 = p_x2 - img_w, p_x2
                 y1, y2 = p_y2 - img_h, p_y2
                 stack.append((p_x1, p_x2, p_y1,   y1))
                 stack.append((p_x1,   x1,   y1, p_y2))
+                assert x2 - x1 == img_w
+                assert y2 - y1 == img_h
+                assert y2 <= mosaic.shape[0]
+                assert x2 <= mosaic.shape[1]
+
+            assert x2 - x1 == img_w
+            assert y2 - y1 == img_h
+            assert img_h == lbl["img"].shape[0]
+            assert img_w == lbl["img"].shape[1]
+
+            assert x1 >= 0
+            assert y1 >= 0
+            assert y2 <= mosaic.shape[0]
+            assert x2 <= mosaic.shape[1]
 
             mosaic[y1:y2, x1:x2] = lbl["img"]
+
             lbl = self._update_labels(lbl, x1, y1)
             mosaic_labels.append(lbl)
 
