@@ -167,8 +167,20 @@ class v8DetectionLoss:
         # LLD CODE starts
         # Instead of BCE we'll implement Focal Loss
         # self.bce = nn.BCEWithLogitsLoss(reduction="none")
-        self.gamma = 2.0  # Focusing parameter
-        self.alpha = 0.25  # Class balance parameter
+        self.gamma = 2  # Focusing parameter
+        gamma_to_recommended_alpha = {
+            0: 0.75,
+            0.1: 0.75,
+            0.2: 0.75,
+            0.5: 0.50,
+            1.0: 0.25,
+            2.0: 0.25,
+            5.0: 0.25,
+        }
+        self.alpha = gamma_to_recommended_alpha.get(self.gamma, 0.25)
+        self.use_focal_loss = True
+        if self.use_focal_loss:
+            print(f"Using focal loss with gamma = {self.gamma} and alpha = {self.alpha}")
         # LLD CODE ends
 
         self.hyp = h
@@ -216,7 +228,30 @@ class v8DetectionLoss:
         # For negative examples: -(1-alpha) * p^gamma * log(1-p)
         loss = -(self.alpha * target_scores * log_p * modulator + (1 - self.alpha) * (1 - target_scores) * log_1_p * modulator)
 
-        return loss
+        """
+        I'm seeing that focal loss really helps the model learn to identify people from far away,
+        in particular with gamma of 2 or greater. After one epoch, the model starts identifying
+        people very well. Then in further epochs, the model actually gets WORSE at identifying
+        far away people. I think this is because the loss is dominated by other classes,
+        like bird and four-legged animal.
+        to prevent this from happening, I will basically eliminate the loss from these classes
+        these weights are hand selected and thus must be updated if we change the classes
+
+        In order they are:
+             - human,
+             - two-wheeler,
+             - car,
+             - bigvehicle (removed),
+             - bird (want to ignore completely),
+             - fourlegged (want to ignore mostly)
+        """
+        class_weights = torch.tensor([2, 0.1, 1, 1e-5, 1e-5, 0.1], device=self.device).view(1, 1, 6)
+        weighted_loss = loss * class_weights
+
+        # print(loss.shape)  # torch.Size([1, 302400, 6])
+
+        # focal loss needs a small magnifier so that the class loss is on a similar scale as box / dfl loss
+        return weighted_loss * 5
 
     def preprocess(self, targets, batch_size, scale_tensor):
         """Preprocesses the target counts and matches with the input batch size to output a tensor."""
@@ -284,9 +319,10 @@ class v8DetectionLoss:
 
         target_scores_sum = max(target_scores.sum(), 1)
 
-        # loss[1] = self.bce(pred_scores, target_scores.to(dtype)).sum() / target_scores_sum  # BCE
-        loss[1] = self.focal_loss(pred_scores, target_scores.to(dtype)).sum() / target_scores_sum
-        loss[1] *= 5  # focal loss needs a small magnifier
+        if not self.use_focal_loss:
+            loss[1] = self.bce(pred_scores, target_scores.to(dtype)).sum() / target_scores_sum  # BCE
+        else:
+            loss[1] = self.focal_loss(pred_scores, target_scores.to(dtype)).sum() / target_scores_sum
 
         # Bbox loss
         if fg_mask.sum():
