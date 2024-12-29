@@ -167,7 +167,7 @@ class v8DetectionLoss:
         self.stage = "hard_finetune"
         # LLD CODE starts
         # Instead of BCE we'll implement Focal Loss
-        self.gamma = 2
+        self.gamma = 1
         gamma_to_recommended_alpha = {
             0: 0.75,
             0.1: 0.75,
@@ -195,7 +195,7 @@ class v8DetectionLoss:
         # I want to push recall super high, so I set alpha greater than 0.5
         self.alpha = 0.5
 
-        self.use_focal_loss = False
+        self.use_focal_loss = True
         if self.use_focal_loss:
             print(f"Using focal loss with gamma = {self.gamma} and alpha = {self.alpha}")
         else:
