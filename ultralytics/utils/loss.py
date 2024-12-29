@@ -164,10 +164,9 @@ class v8DetectionLoss:
 
         m = model.model[-1]  # Detect() module
 
-        self.stage = "balanced_subset"
+        self.stage = "hard_finetune"
         # LLD CODE starts
         # Instead of BCE we'll implement Focal Loss
-        # self.bce = nn.BCEWithLogitsLoss(reduction="none")
         self.gamma = 2
         gamma_to_recommended_alpha = {
             0: 0.75,
@@ -179,10 +178,28 @@ class v8DetectionLoss:
             3.0: 0.25,
             5.0: 0.25,
         }
-        self.alpha = gamma_to_recommended_alpha.get(self.gamma, 0.25)
-        self.use_focal_loss = True
+
+        # alpha is essentially a weighting factor for FNs vs FPs
+        # when y = 1, we have: -1 * alpha * (1 - p) ^ gamma * log(p)
+        # when y = 0, we have: -1 * (1 - alpha) * (p) ^ gamma * log(1 - p)
+
+        # when y is 1 and p is close to 1, (1-p) is close to zero, and gamma causes the loss to be downweighted (true positives ignored)
+        # when y is 1 and p is close to 0, (1-p) is closer to one, and alpha determines the weight of the loss (false negative weighted by alpha)
+
+        # when y is 0 and p is close to 0, (p) is close to zero, and gamma causes the loss to be downweighted (true negatives ignored)
+        # when y is 0 and p is close to 1, (p) is closer to zero, and alpha determines the weight of the loss (false positive weighted by alpha)
+
+        # self.alpha = gamma_to_recommended_alpha.get(self.gamma, 0.25)
+
+        # I care more about recall then precision, because I think I can add hard negatives (in the form of noise) in a later phase of training
+        # I want to push recall super high, so I set alpha greater than 0.5
+        self.alpha = 0.5
+
+        self.use_focal_loss = False
         if self.use_focal_loss:
             print(f"Using focal loss with gamma = {self.gamma} and alpha = {self.alpha}")
+        else:
+            self.bce = nn.BCEWithLogitsLoss(reduction="none")
         # LLD CODE ends
 
         self.hyp = h
@@ -258,11 +275,11 @@ class v8DetectionLoss:
             classwise_loss[:, 1:] *= factor
         else:
             # try an approach where we hardcode scale factors for other classes
-            epsilon = 1e-8
+            epsilon = 1e-4
             class_weights = torch.tensor([1.5, epsilon, 1, 0, 0, epsilon], device=self.device).view(1, 1, 6)
             classwise_loss = classwise_loss * class_weights
 
-        return classwise_loss.sum() * 5
+        return classwise_loss.sum() * 25
 
     def preprocess(self, targets, batch_size, scale_tensor):
         """Preprocesses the target counts and matches with the input batch size to output a tensor."""
