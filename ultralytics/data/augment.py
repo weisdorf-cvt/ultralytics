@@ -782,7 +782,7 @@ class Mosaic(BaseMixTransform):
     #     scale = math.sqrt(target_area / smallest_person_area)
     #     scale = max(scale, 50 / img_w, 50 / img_h)
 
-    @benchmark()
+    # @benchmark()
     def _half_fit_mosaic(self, labels):
 
         def _debug(*args):
