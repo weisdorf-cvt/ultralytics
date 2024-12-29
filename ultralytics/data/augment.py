@@ -521,7 +521,7 @@ class Buckets:
 
 def _mosaic_resize_label(lbl: Dict, scale: float) -> Dict:
 
-    lbl = deepcopy(lbl)
+    # lbl = deepcopy(lbl)
     img_h, img_w = lbl["img"].shape[:2]
     new_img_h = int(scale * img_h)
     new_img_w = int(scale * img_w)
@@ -667,6 +667,37 @@ class Mosaic(BaseMixTransform):
 
         return self._half_fit_mosaic(labels)
 
+
+    # def _select_scale_by_person_area(smallest_person_area, ):
+    #     instances: Instances = labels["instances"]
+    #     class_ids = labels["cls"]
+    #     instance_contains_non_person_boxes = False
+    #     smallest_person_area = None
+    #     for i in range(len(instances)):
+    #         class_id = int(class_ids[i])
+    #         if class_id != 0:
+    #             instance_contains_non_person_boxes = True
+    #             continue
+    #         area = instances.bbox_areas[0]
+    #         if smallest_person_area is None or area < smallest_person_area:
+    #             smallest_person_area = area
+    #     # if not instance_contains_non_person_boxes and smallest_person_area is not None and random.random() < shrink_probability:
+    #     if smallest_person_area is not None and random.random() < shrink_probability:
+    #         _debug("Passed roll for applying shrink, computing proposed scale")
+    #         target_area = random.uniform(math.sqrt(100), math.sqrt(400)) ** 2
+    #         scale = math.sqrt(target_area / smallest_person_area)
+    #         scale = max(scale, 50 / img_w, 50 / img_h)
+    #         if scale < 1:
+    #             _debug("Shrink scale is less than one, applying shrink and grayscale")
+    #             lbl, (img_h, img_w) = _mosaic_resize_label(lbl, scale)
+    #             assert lbl["img"].shape[0] == img_h
+    #             assert lbl["img"].shape[1] == img_w
+    #             assert lbl["img"].shape[0] <= remaining_h
+    #             assert lbl["img"].shape[1] <= remaining_w
+    #     target_area = random.uniform(math.sqrt(100), math.sqrt(400)) ** 2
+    #     scale = math.sqrt(target_area / smallest_person_area)
+    #     scale = max(scale, 50 / img_w, 50 / img_h)
+
     def _half_fit_mosaic(self, labels):
 
         def _debug(*args):
@@ -734,7 +765,7 @@ class Mosaic(BaseMixTransform):
             else:
                 bucket_index = _get_bucket_index(max(remaining_w, remaining_h))
                 lbl = buckets.get(bucket_index, lambda lbl: lbl["img"].shape[0] <= remaining_h and lbl["img"].shape[1] <= remaining_w)
-                shrink_probability = 0.8 / self.p
+                shrink_probability = 1 / self.p
 
             if lbl is None:
                 total_unfillable_area += remaining_h * remaining_w
@@ -746,8 +777,8 @@ class Mosaic(BaseMixTransform):
 
             # with some probability we are going to scale the image down so that
             # the smallest person bounding box has a very small area
-            instances: Instances = labels["instances"]
-            class_ids = labels["cls"]
+            instances: Instances = lbl["instances"]
+            class_ids = lbl["cls"]
             instance_contains_non_person_boxes = False
 
             smallest_person_area = None
@@ -762,13 +793,16 @@ class Mosaic(BaseMixTransform):
 
             # if not instance_contains_non_person_boxes and smallest_person_area is not None and random.random() < shrink_probability:
             if smallest_person_area is not None and random.random() < shrink_probability:
-                _debug("Passed roll for applying shrink, computing proposed scale")
+                # _debug("Passed roll for applying shrink, computing proposed scale")
 
                 target_area = random.uniform(math.sqrt(100), math.sqrt(400)) ** 2
+                # target_area = random.uniform(100, 400)
                 scale = math.sqrt(target_area / smallest_person_area)
+                _debug(f"Proposed scale {scale}: ({img_w * scale}, {img_h*scale})")
                 scale = max(scale, 50 / img_w, 50 / img_h)
+                # scale = random.uniform(0.6, 1)
                 if scale < 1:
-                    _debug("Shrink scale is less than one, applying shrink and grayscale")
+                    _debug("Shrink scale is less than one, applying shrink")
                     lbl, (img_h, img_w) = _mosaic_resize_label(lbl, scale)
                     assert lbl["img"].shape[0] == img_h
                     assert lbl["img"].shape[1] == img_w
