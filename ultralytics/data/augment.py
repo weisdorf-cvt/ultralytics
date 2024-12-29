@@ -1,5 +1,14 @@
 # Ultralytics YOLO 🚀, AGPL-3.0 license
 
+import cProfile
+import pstats
+from pstats import SortKey
+
+import time
+from statistics import mean, median
+from collections import deque
+from functools import wraps
+
 import math
 import random
 from copy import deepcopy
@@ -21,6 +30,65 @@ from ultralytics.utils.torch_utils import TORCHVISION_0_10, TORCHVISION_0_11, TO
 DEFAULT_MEAN = (0.0, 0.0, 0.0)
 DEFAULT_STD = (1.0, 1.0, 1.0)
 DEFAULT_CROP_FRACTION = 1.0
+
+
+class benchmark:
+    """
+    A decorator that tracks execution times of the wrapped function.
+    Prints statistics every sample_size calls.
+
+    Args:
+        sample_size: Number of function calls to collect before printing statistics
+    """
+
+    def __init__(self, sample_size=20, profile=False):
+
+        self.sample_size = sample_size
+        self.times = deque(maxlen=sample_size)
+        self.call_counter = 0
+
+        self._profile = profile
+        if profile:
+            self.profiler = cProfile.Profile()
+
+    def __call__(self, func):
+
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+
+            start = time.perf_counter()
+
+            if self._profile:
+                self.profiler.enable()
+
+            result = func(*args, **kwargs)
+
+            if self._profile:
+                self.profiler.disable()
+
+            end = time.perf_counter()
+
+            self.times.append(end - start)
+            self.call_counter += 1
+
+            # Print statistics when we've collected enough samples
+            if self.call_counter % self.sample_size == 0:
+                print(f"\n{func.__name__} timing stats (over last {self.sample_size} calls):")
+                # print(f"Total over {self.call_counter} calls:  {sum(self.times):.4f} seconds")
+                print(f"Average: {mean(self.times):.4f} seconds")
+                print(f"Median:  {median(self.times):.4f} seconds")
+                print(f"Min:     {min(self.times):.4f} seconds")
+                print(f"Max:     {max(self.times):.4f} seconds")
+                self.times.clear()
+
+                if self._profile:
+                    stats = pstats.Stats(self.profiler)
+                    stats.sort_stats(SortKey.CUMULATIVE).print_stats(20)
+                    self.profiler = cProfile.Profile()
+
+            return result
+
+        return wrapper
 
 
 class BaseTransform:
@@ -698,6 +766,7 @@ class Mosaic(BaseMixTransform):
     #     scale = math.sqrt(target_area / smallest_person_area)
     #     scale = max(scale, 50 / img_w, 50 / img_h)
 
+    @benchmark()
     def _half_fit_mosaic(self, labels):
 
         def _debug(*args):
