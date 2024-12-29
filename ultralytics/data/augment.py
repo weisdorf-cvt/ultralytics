@@ -1,5 +1,7 @@
 # Ultralytics YOLO 🚀, AGPL-3.0 license
 
+import threading
+
 import cProfile
 import pstats
 from pstats import SortKey
@@ -30,6 +32,17 @@ from ultralytics.utils.torch_utils import TORCHVISION_0_10, TORCHVISION_0_11, TO
 DEFAULT_MEAN = (0.0, 0.0, 0.0)
 DEFAULT_STD = (1.0, 1.0, 1.0)
 DEFAULT_CROP_FRACTION = 1.0
+
+
+# Create thread-local storage
+thread_local = threading.local()
+
+
+def get_mosaic_array():
+    # Create array if it doesn't exist for this thread
+    if not hasattr(thread_local, 'mosaic'):
+        thread_local.mosaic = np.empty((3840, 3840, 3), dtype=np.uint8)
+    return thread_local.mosaic
 
 
 class benchmark:
@@ -554,41 +567,43 @@ class BaseMixTransform:
         return labels
 
 
-class Buckets:
-
-    def __init__(self, key: Callable):
-        self._key = key
-        self._buckets = []
-
-    def insert(self, item):
-        index = self._key(item)
-        assert isinstance(index, int), "Key function must return an index"
-
-        while len(self._buckets) < (index + 1):
-            self._buckets.append([])
-        self._buckets[index].append(item)
-
-    def size(self):
-        return sum(len(b) for b in self._buckets)
-
-    def get(self, index, condition: Callable):
-
-        while index >= len(self._buckets):
-            index -= 1
-
-        while index >= 0:
-            for j in range(len(self._buckets[index]) - 1, -1, -1):
-                item = self._buckets[index][j]
-                if condition(item):
-                    result = self._buckets[index].pop(j)
-                    return result
-            index -= 1
-
-        return None
+# class Buckets:
+#
+#     def __init__(self, key: Callable):
+#         self._key = key
+#         self._buckets = []
+#
+#     # @benchmark(1000)
+#     def insert(self, item):
+#         index = self._key(item)
+#         assert isinstance(index, int), "Key function must return an index"
+#
+#         while len(self._buckets) < (index + 1):
+#             self._buckets.append([])
+#         self._buckets[index].append(item)
+#
+#     def size(self):
+#         return sum(len(b) for b in self._buckets)
+#
+#     # @benchmark(1000)
+#     def get(self, index, condition: Callable):
+#
+#         while index >= len(self._buckets):
+#             index -= 1
+#
+#         while index >= 0:
+#             for j in range(len(self._buckets[index]) - 1, -1, -1):
+#                 item = self._buckets[index][j]
+#                 if condition(item):
+#                     result = self._buckets[index].pop(j)
+#                     return result
+#             index -= 1
+#
+#         return None
 
 
 def _mosaic_resize_label(lbl: Dict, scale: float) -> Dict:
-
+    # return lbl, (lbl["img"].shape[0], lbl["img"].shape[1])
     # lbl = deepcopy(lbl)
     img_h, img_w = lbl["img"].shape[:2]
     new_img_h = int(scale * img_h)
@@ -658,12 +673,13 @@ class Mosaic(BaseMixTransform):
         super().__init__(dataset=dataset, p=p)
         self.imgsz = imgsz
         self.border = (-imgsz // 2, -imgsz // 2)  # width, height
+        self._mosaic_img = None
 
         if self.imgsz > 1000:
             print("Overriding MosaicTransform to use half_fit mosaic for large images")
             print("Overriding MosaicTransform.n = 80")
             print("Overriding MosaicTransform.border = (0, 0)")
-            self.n = 80
+            self.n = 40
             self.border = (0, 0)
         else:
             print("Setting MosaicTransform.n = 4")
@@ -787,9 +803,15 @@ class Mosaic(BaseMixTransform):
             largest_dim = max(h, w)
             return _get_bucket_index(largest_dim)
 
-        buckets = Buckets(key=_insertion_key)
-        for lbl in labels["mix_labels"]:
-            buckets.insert(lbl)
+        labels["mix_labels"].sort(
+            key=lambda lbl: max(lbl["img"].shape)
+        )
+        mix_labels = labels["mix_labels"]
+        assert len(mix_labels) > 0
+
+        # buckets = Buckets(key=_insertion_key)
+        # for lbl in labels["mix_labels"]:
+        #     buckets.insert(lbl)
 
         if isinstance(self.imgsz, int):
             target_h = self.imgsz
@@ -797,7 +819,9 @@ class Mosaic(BaseMixTransform):
         else:
             target_h, target_w = self.imgsz
 
-        mosaic = np.full((target_h, target_w, labels["img"].shape[2]), 114, dtype=np.uint8)
+        mosaic = get_mosaic_array()
+        mosaic.fill(114)
+
         mosaic_labels = []
 
         # 'recursive' algorithm implemented via stack
@@ -832,8 +856,20 @@ class Mosaic(BaseMixTransform):
                     _debug("Scale down image that started larger than mosaic size")
                     lbl, (img_h, img_w) = _mosaic_resize_label(lbl, scale)
             else:
-                bucket_index = _get_bucket_index(max(remaining_w, remaining_h))
-                lbl = buckets.get(bucket_index, lambda lbl: lbl["img"].shape[0] <= remaining_h and lbl["img"].shape[1] <= remaining_w)
+                # bucket_index = _get_bucket_index(max(remaining_w, remaining_h))
+                # lbl = buckets.get(bucket_index, lambda lbl: lbl["img"].shape[0] <= remaining_h and lbl["img"].shape[1] <= remaining_w)
+                # label["resized_shape"]
+                bucket_index = len(mix_labels) - 1
+                while bucket_index > 0 and (mix_labels[bucket_index]["resized_shape"][0] > remaining_h or
+                                            mix_labels[bucket_index]["resized_shape"][1] > remaining_w
+                                            ):
+                    bucket_index = bucket_index // 2
+
+                if (bucket_index >= 0 and mix_labels[bucket_index]["resized_shape"][0] <= remaining_h and mix_labels[bucket_index]["resized_shape"][1] <= remaining_w):
+                    lbl = mix_labels.pop(bucket_index)
+                else:
+                    lbl = None
+
                 shrink_probability = 1 / self.p
 
             if lbl is None:
