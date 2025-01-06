@@ -78,6 +78,16 @@ class Bboxes:
             else self.bboxes[:, 3] * self.bboxes[:, 2]  # format xywh or ltwh
         )
 
+    def widths(self):
+
+        if self.format == "xyxy":
+            return (self.bboxes[:, 2] - self.bboxes[:, 0])
+
+        if self.format == "xywh" or self.format == "ltwh":
+            return self.bboxes[:, 2]
+
+        raise NotImplemented("Unknown format")
+
     # def denormalize(self, w, h):
     #    if not self.normalized:
     #         return
