@@ -10,6 +10,7 @@ import time
 from statistics import mean, median
 from collections import deque
 from functools import wraps
+import itertools
 
 import math
 import random
@@ -620,6 +621,136 @@ def _mosaic_resize_label(lbl: Dict, scale: float) -> Dict:
     return lbl, (new_img_h, new_img_w)
 
 
+def _distance_to_num_pixels(distance):
+    focal_length = 50e-3
+    pitch = 8.4e-6
+    mean_person_width = 54.46e-2
+    return mean_person_width * focal_length / (pitch * distance)
+
+
+_DISTANCE_RANGES = tuple(reversed([
+    (100, 300),
+    (300, 400),
+    (400, 500),
+    (500, 600),
+    (550, 650),
+    (600, 700),
+    (650, 750),
+    (700, 800),
+    (750, 850),
+]))
+
+_PERSON_WIDTHS_IN_PIXELS = tuple(
+    (_distance_to_num_pixels(lb), _distance_to_num_pixels(ub))
+    for lb, ub in _DISTANCE_RANGES
+)
+
+
+class StatsRecorder:
+
+    def __init__(self, title: str, lbl_to_stats: Callable, lower_bound, upper_bound, num_buckets):
+        print(f"New StatsRecorder object: {title}")
+        self._foo = lbl_to_stats
+
+        self._title = title
+        self._lower_bound = lower_bound
+        self._upper_bound = upper_bound
+        self._num_buckets = num_buckets
+        self._bucket_counts = [0 for _ in range(num_buckets + 1)]
+        self._call_count = 0
+
+    def __call__(self, lbl):
+
+        stats = self._foo(lbl)
+        step = (self._upper_bound - self._lower_bound) / self._num_buckets
+        for value in stats:
+            if value < self._lower_bound:
+                print(f"ERROR: invalid value: {value}")
+                continue
+
+            if value < self._upper_bound:
+                bucket_index = int((value - self._lower_bound) / (step))
+            else:
+                bucket_index = self._num_buckets
+
+            self._bucket_counts[bucket_index] += 1
+
+        self._call_count += 1
+        if self._call_count % (500 * 32) == 0:
+            self._print()
+
+    def _print(self):
+        step = (self._upper_bound - self._lower_bound) / self._num_buckets
+        total = sum(self._bucket_counts)
+        print(self._title, ":", total)
+        for i in range(self._num_buckets):
+            print(f"{i * step} -> {i * step + step}: {self._bucket_counts[i] / total * 100:.2f}%")
+        print(f"> {self._upper_bound}: {self._bucket_counts[-1] / total * 100:.2f}%")
+
+
+def _get_person_widths(lbl):
+
+    instances: Instances = lbl["instances"]
+    class_ids = lbl["cls"]
+    N = len(instances)
+    if not any(class_ids[i] == 0 for i in range(N)):
+        return []
+
+    img_h, img_w, _ = lbl["img"].shape
+    was_normalized = instances.normalized
+    if instances.normalized:
+        instances.denormalize(img_w, img_h)
+
+    instance_bbox_widths = instances._bboxes.widths()
+    result = [
+        instance_bbox_widths[i]
+        for i in range(N)
+        if class_ids[i] == 0
+    ]
+
+    if was_normalized and not instances.normalized:
+        instances.normalize(img_w, img_h)
+
+    return result
+
+
+def _get_person_distances(lbl):
+    focal_length = 50e-3
+    pitch = 8.4e-6
+    mean_person_width = 54.46e-2
+    widths_in_pixels = _get_person_widths(lbl)
+    return [
+        mean_person_width * focal_length / (w * pitch)
+        for w in widths_in_pixels
+    ]
+
+
+def _get_smallest_person_width(lbl):
+
+    instances: Instances = lbl["instances"]
+    class_ids = lbl["cls"]
+    N = len(instances)
+    if not any(class_ids[i] == 0 for i in range(N)):
+        return None
+
+    img_h, img_w, _ = lbl["img"].shape
+    was_normalized = instances.normalized
+    if instances.normalized:
+        instances.denormalize(img_w, img_h)
+
+    instance_bbox_widths = instances._bboxes.widths()
+    result = min(
+        instance_bbox_widths[i]
+        for i in range(N)
+        if class_ids[i] == 0
+    )
+
+    if was_normalized and not instances.normalized:
+        instances.normalize(img_w, img_h)
+
+    return result
+
+
 class Mosaic(BaseMixTransform):
     """
     Mosaic augmentation for image datasets.
@@ -681,9 +812,12 @@ class Mosaic(BaseMixTransform):
             print("Overriding MosaicTransform.border = (0, 0)")
             self.n = 40
             self.border = (0, 0)
+            self._person_distance_recorder = StatsRecorder("Distances of person instances", _get_person_distances, 0, 1000, 10)
+            self._target_width_selector = itertools.cycle(_PERSON_WIDTHS_IN_PIXELS)
         else:
             print("Setting MosaicTransform.n = 4")
             self.n = n
+
 
     def get_indexes(self, buffer=True):
         """
@@ -785,8 +919,9 @@ class Mosaic(BaseMixTransform):
     # @benchmark()
     def _half_fit_mosaic(self, labels):
 
+        DEBUG_MODE = False
         def _debug(*args):
-            if False:
+            if DEBUG_MODE:
                 print(*args)
 
         _debug(" ====== ENTERING HALFFIT ====== ")
@@ -819,7 +954,8 @@ class Mosaic(BaseMixTransform):
         else:
             target_h, target_w = self.imgsz
 
-        mosaic = get_mosaic_array()
+        # mosaic = get_mosaic_array()
+        mosaic = np.empty((self.imgsz, self.imgsz, 3), dtype=np.uint8)
         mosaic.fill(114)
 
         mosaic_labels = []
@@ -855,6 +991,9 @@ class Mosaic(BaseMixTransform):
                 if scale < 1:
                     _debug("Scale down image that started larger than mosaic size")
                     lbl, (img_h, img_w) = _mosaic_resize_label(lbl, scale)
+
+                if DEBUG_MODE:
+                    lbl["img"].fill(0)
             else:
                 # bucket_index = _get_bucket_index(max(remaining_w, remaining_h))
                 # lbl = buckets.get(bucket_index, lambda lbl: lbl["img"].shape[0] <= remaining_h and lbl["img"].shape[1] <= remaining_w)
@@ -882,30 +1021,23 @@ class Mosaic(BaseMixTransform):
 
             # with some probability we are going to scale the image down so that
             # the smallest person bounding box has a very small area
-            instances: Instances = lbl["instances"]
-            class_ids = lbl["cls"]
-            instance_contains_non_person_boxes = False
 
-            smallest_person_area = None
-            for i in range(len(instances)):
-                class_id = int(class_ids[i])
-                if class_id != 0:
-                    instance_contains_non_person_boxes = True
-                    continue
-                area = instances.bbox_areas[0]
-                if smallest_person_area is None or area < smallest_person_area:
-                    smallest_person_area = area
+            smallest_person_width = _get_smallest_person_width(lbl)
+            # instances: Instances = lbl["instances"]
+            # class_ids = lbl["cls"]
+            # instance_contains_non_person_boxes = any(class_ids[i] != 0 for i in range(len(instances)))
 
-            # if not instance_contains_non_person_boxes and smallest_person_area is not None and random.random() < shrink_probability:
-            if smallest_person_area is not None and random.random() < shrink_probability:
+            # if not instance_contains_non_person_boxes and smallest_person_width is not None and random.random() < shrink_probability:
+            # if smallest_person_width is not None and random.random() < shrink_probability:
                 # _debug("Passed roll for applying shrink, computing proposed scale")
 
-                target_area = random.uniform(math.sqrt(100), math.sqrt(400)) ** 2
-                # target_area = random.uniform(100, 400)
-                scale = math.sqrt(target_area / smallest_person_area)
-                _debug(f"Proposed scale {scale}: ({img_w * scale}, {img_h*scale})")
+            if smallest_person_width is not None:
+                width_lb, width_ub = next(self._target_width_selector)
+                target_width = random.uniform(width_lb, width_ub)
+                scale = target_width / smallest_person_width
+                _debug(f"Target person width: {target_width}, smallest person width: {smallest_person_width}, scale: {scale}. New image shape {img_w * scale}, {img_h * scale}")
                 scale = max(scale, 50 / img_w, 50 / img_h)
-                # scale = random.uniform(0.6, 1)
+                _debug(f"Proposed scale {scale}: ({img_w * scale}, {img_h * scale})")
                 if scale < 1:
                     _debug("Shrink scale is less than one, applying shrink")
                     lbl, (img_h, img_w) = _mosaic_resize_label(lbl, scale)
@@ -914,13 +1046,10 @@ class Mosaic(BaseMixTransform):
                     assert lbl["img"].shape[0] <= remaining_h
                     assert lbl["img"].shape[1] <= remaining_w
 
-            # # with some probability, make the image grayscale
-            # if random.random() < 0.05:
-            #     gray_image = cv2.cvtColor(lbl["img"], cv2.COLOR_BGR2GRAY)
-            #     lbl["img"] = cv2.merge([gray_image, gray_image, gray_image])
+            # Record person widths after resizing
+            self._person_distance_recorder(lbl)
 
             total_filled_area += img_h * img_w
-
             option = random.randint(0, 3)
             if option == 0:                             # top left
                 x1, x2 = p_x1, p_x1 + img_w
