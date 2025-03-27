@@ -269,15 +269,15 @@ class v8DetectionLoss:
             return loss.sum() * 5
 
         classwise_loss = loss.sum(1)
-        if False:
-            # try an approach where we only care about other losses when person loss is very low
-            factor = torch.pow(classwise_loss, 2)
-            classwise_loss[:, 1:] *= factor
-        else:
-            # try an approach where we hardcode scale factors for other classes
-            epsilon = 1e-4
-            class_weights = torch.tensor([1.5, epsilon, 1, 0, 0, epsilon], device=self.device).view(1, 1, 6)
-            classwise_loss = classwise_loss * class_weights
+        # if False:
+        #     # try an approach where we only care about other losses when person loss is very low
+        #     factor = torch.pow(classwise_loss, 2)
+        #     classwise_loss[:, 1:] *= factor
+        # else:
+        #     # try an approach where we hardcode scale factors for other classes
+        #     epsilon = 1e-4
+        #     class_weights = torch.tensor([1.5, epsilon, 1, 0, 0, epsilon], device=self.device).view(1, 1, 6)
+        #     classwise_loss = classwise_loss * class_weights
 
         return classwise_loss.sum() * 25
 
